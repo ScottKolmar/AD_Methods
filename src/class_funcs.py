@@ -43,6 +43,7 @@ class DataSet():
 
         self.ad_measures = {
             'average_cosine_similarities': [],
+            'average_euclidean_distances': [],
             'mahalanobis_distances': []
             }
 
@@ -158,6 +159,37 @@ class DataSet():
             # Calculate squared error for each prediction
             squared_error = (self.y_test[i] - y_pred)**2
             self.score_dicts['RF']['Algorithm']['Squared_error'].append(squared_error)
+
+        return None
+    
+    def calculate_mean_distance(self):
+        """ Calculates the mean distance of each test set entry to its n nearest neighbors."""
+
+        # Loop through each test set
+        for i in range(len(self.X_test)):
+
+            # Get corresponding array of neighbor indices
+            neighbor_indices_array = self.indices[i]
+
+            # Empty list of distances for a test set
+            mean_euc_distances = []
+
+            # Loop through each compound in np array of test set
+            for compound_index in self.X_test_np[i]:
+
+                # Get compound vector
+                compound = self.X_test_np[i][compound_index]
+
+                # Get neighbor vectors
+                neighbor_indices = neighbor_indices_array[compound_index]
+                neighbor_vecs = [self.X_train_np[neighbor_idx] for neighbor_idx in neighbor_indices]
+
+                # Calculate distances and add to test set list of distances
+                mean_distance = np.mean([pairwise.euclidean_distances(compound.reshape(1,-1), neighbor_vec.reshape(1,-1)) for neighbor_vec in neighbor_vecs])
+                mean_euc_distances.append(mean_distance)
+            
+            # Append test set distances to dataset list of distances
+            self.ad_measures['average_euclidean_distances'].append(mean_euc_distances)
 
         return None
     
