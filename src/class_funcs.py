@@ -1,9 +1,12 @@
 ### IMPORTS ###
+from math import dist
+from re import M
 import pandas as pd
 import numpy as np
 import os
 import pprint as pp
 import matplotlib.pyplot as plt
+from scipy.spatial import distance
 
 # Math imports
 from scipy.stats import pearsonr, linregress
@@ -18,12 +21,109 @@ from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
 
 ### FUNCTIONS ###
 
+####################
+# DISTANCE FUNCTIONS
+####################
+
+# class Distance():
+#     def __init__(self):
+#         self.name = None
+#         self.distance = None
+
+
+def euclidean(v1, v2):
+    name = 'euclidean'
+    distance = np.sqrt(np.sum((v1-v2)**2))
+    return distance, name
+
+def cityblock(v1, v2):
+    name = 'cityblock'
+    distance = np.sum(np.abs(v1-v2))
+    return distance, name
+
+def minkowski(v1, v2, n=2):
+    name = 'minkowski'
+    distance = np.sum(np.abs(v1-v2)**n)**(1/n)
+    return distance, name
+
+def chebyshev(v1, v2):
+    name = 'chebyshev'
+    distance = np.max(np.abs(v1-v2))
+    return distance, name
+
+def sorensen(v1, v2):
+    name = 'sorensen'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = A/np.sum(v1+v2)
+    return distance, name
+
+def gower(v1, v2):
+    name = 'gower'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = A/d
+    return distance, name
+
+def sorgel(v1, v2):
+    name = 'sorgel'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = A/np.sum(np.maximum(v1,v2))
+    return distance, name
+
+def kulczynski(v1, v2):
+    name = 'kulczynski'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = A/np.sum(np.minimum(v1,v2))
+    return distance, name
+
+def canberra(v1,v2):
+    name = 'canberra'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = np.sum(np.abs(v1,v2)/(v1+v2))
+    return distance, name
+
+def lorentzian(v1,v2):
+    name = 'lorentzian'
+    A = np.sum(np.abs(v1-v2))
+    d = len(v1)
+    distance = np.sum(np.log(1+np.abs(v1-v2)))
+    return distance, name
+
+def czekanowski(v1,v2):
+    name = 'czekanowski'
+    A = np.sum(np.abs(v1-v2))
+    distance = A/np.sum(v1+v2)
+    return distance, name
+
+def ruzicka(v1,v2):
+    name = 'ruzicka'
+    distance = 1-np.sum(np.minimum(v1,v2))/np.sum(np.maximum(v1,v2))
+    return distance, name
+
+def tanimoto(v1,v2):
+    name = 'tanimoto'
+    distance = np.sum(np.maximum(v1,v2)-np.minimum(v1,v2))/np.sum(np.maximum(v1,v2))
+    return distance, name
+
+def cosine_sim(v1,v2):
+    name = 'cosine_similarity'
+    distance = pairwise.cosine_similarity(v1,v2)
+    return distance, name
+
+######################
+# DATASET FUNCTIONS
+######################
+
 class DataSet():
 
-    def __init__(self, csv, size):
+    def __init__(self, csv, size, **kwargs):
         self.csv = csv
         self.dataset_name = csv.split('\\')[-1].split('_')[0]
-        self.df = pd.read_csv(csv, header=0, index_col=0).sample(size, random_state=42)
+        self.df = pd.read_csv(csv, header=0, index_col=0).sample(size, **kwargs)
         self.X = self.df.iloc[:,:-1]
         self.y = self.df.iloc[:,-1]
 
@@ -38,13 +138,27 @@ class DataSet():
         self.y_test_np = []
         
         self.indices = []
+        self.distances = []
 
         self.score_dicts = {}
 
         self.ad_measures = {
-            'average_cosine_similarities': [],
-            'average_euclidean_distances': [],
-            'mahalanobis_distances': []
+            'average_cosine_similarity': [],
+            'average_euclidean': [],
+            'average_cityblock': [],
+            'average_minkowski': [],
+            'average_chebyshev': [],
+            'average_sorensen': [],
+            'average_gower': [],
+            'average_sorgel': [],
+            'average_kulczynski': [],
+            'average_canberra': [],
+            'average_lorentzian': [],
+            'average_czekanowski': [],
+            'average_ruzicka': [],
+            'average_tanimoto': [],
+            'length_of_means': [],
+            'average_mahalanobis': []
             }
 
     def split(self, **kwargs):
@@ -69,13 +183,18 @@ class DataSet():
 
         for i in range(len(self.X_train)):
             neighbors = NearestNeighbors(n_neighbors=n_neighbors, **kwargs)
-            neighbors.fit(X=self.X_train[i])
+            neighbors.fit(X=self.X_train_np[i])
             dists, indices = neighbors.kneighbors(X=self.X_test_np[i], n_neighbors=5, return_distance=True)
             self.indices.append(indices)
+            self.distances.append({neighbors.effective_metric_:dists})
 
         return None
 
-    def calc_average_cosine_similarity(self):
+##############################
+# AD MEASURES
+##############################
+
+    def calculate_average_cosine_similarity(self):
         """ Calculates the average cosine similarity of n nearest neighbors for every entry in the test set."""
 
         for i_1 in range(len(self.X_train)):
@@ -90,8 +209,113 @@ class DataSet():
             self.ad_measures['average_cosine_similarities'].append(ave_cos_list)
         
         return None
+    
+    def calculate_average_distance(self):
+        """ Calculates the mean distance of each test set entry to its n nearest neighbors."""
 
-    def calc_kNN_error_corr(self, n_neighbors, **kwargs):
+        # Loop through each test set
+        for i in range(len(self.X_test)):
+
+            # Get corresponding array of neighbor indices
+            neighbor_indices_array = self.indices[i]
+
+            # Empty list of distances for a test set
+            mean_euc_distances = []
+
+            # Loop through each compound in np array of test set
+            for compound_index in range(len(self.X_test_np[i])):
+
+                # Get compound vector
+                compound = self.X_test_np[i][compound_index]
+
+                # Get neighbor vectors
+                neighbor_indices = neighbor_indices_array[compound_index]
+                neighbor_vecs = [self.X_train_np[i][neighbor_idx] for neighbor_idx in neighbor_indices]
+
+                # Calculate distances and add to test set list of distances
+                mean_distance = np.mean([pairwise.euclidean_distances(compound.reshape(1,-1), neighbor_vec.reshape(1,-1)) for neighbor_vec in neighbor_vecs])
+
+                mean_euc_distances.append(mean_distance)
+            
+            # Append test set distances to dataset list of distances
+            self.ad_measures['average_euclidean_distances'].append(mean_euc_distances)
+
+        return None
+    
+    def calculate_all_distances(self):
+        """ Calculates all mean distance measures for each test set entry to its n nearest neighbors."""
+
+        # Loop through each distance measure
+        for function in [euclidean, cityblock, minkowski, chebyshev, sorensen, gower, sorgel, kulczynski, canberra, lorentzian, czekanowski, ruzicka, tanimoto, cosine_sim]:
+            
+            # Loop through each test set
+            for i in range(len(self.X_test)):
+        
+                # Get corresponding array of neighbor indices
+                neighbor_indices_array = self.indices[i]
+
+                # Empty list of distances for a test set
+                mean_distances = []
+
+                # Loop through each compound in np array of test set
+                for compound_index in range(len(self.X_test_np[i])):
+                    
+                    # Get compound vector
+                    compound = self.X_test_np[i][compound_index]
+
+                    # Get neighbor vectors
+                    neighbor_indices = neighbor_indices_array[compound_index]
+                    neighbor_vecs = [self.X_train_np[i][neighbor_idx] for neighbor_idx in neighbor_indices]
+
+                    # Calculate distances and add to test set list of distances
+                    dist_tuples = [function(v1 = compound.reshape(1,-1), v2 = neighbor_vec.reshape(1,-1)) for neighbor_vec in neighbor_vecs]
+                    mean_distance = np.mean([x[0] for x in dist_tuples])
+                    name = dist_tuples[0][1]
+                    
+                    mean_distances.append(mean_distance)
+                
+                # Append test set distances to dataset list of distances
+                self.ad_measures[f'average_{name}'].append(mean_distances)
+
+        return None
+
+    def calculate_length_mean_vector(self):
+        """ """
+        # Loop through each test set
+        for i in range(len(self.X_test)):
+
+            # Get corresponding array of neighbor indices
+            neighbor_indices_array = self.indices[i]
+
+            # Empty list of distances for a test set
+            length_of_mean_vecs = []
+
+            # Loop through each compound in np array of test set
+            for compound_index in range(len(self.X_test_np[i])):
+
+                # Get compound vector
+                compound = self.X_test_np[i][compound_index]
+
+                # Get neighbor vectors
+                neighbor_indices = neighbor_indices_array[compound_index]
+                neighbor_vecs = [self.X_train_np[i][neighbor_idx] for neighbor_idx in neighbor_indices]
+
+                # Calculate lengths of each mean vector and add to test set list
+                distances = [pairwise.euclidean_distances(compound.reshape(1,-1), neighbor_vec.reshape(1,-1)) for neighbor_vec in neighbor_vecs]
+                mean_vector = np.mean(distances, axis=0)
+                length = np.linalg.norm(mean_vector)
+                length_of_mean_vecs.append(length)
+
+            # Append test set list of lengths to dataset list
+            self.ad_measures['length_of_means'].append(length_of_mean_vecs)
+
+            return None
+
+#########################
+# Algorithm predictions
+#########################
+
+    def pred_kNN(self, n_neighbors, **kwargs):
         """ Generates predictions using kNN, calculates the prediction error, and calculates
         the Pearson Correlation Coefficient between the prediction error and the AD measures."""
 
@@ -103,6 +327,8 @@ class DataSet():
                 },
             'Results':{
                 'average_cosine_similarities': [],
+                'average_euclidean_distances': [],
+                'length_of_means': [],
                 'mahalanobis_distances': []
                 }
             }
@@ -121,7 +347,7 @@ class DataSet():
         
         return None
     
-    def calc_random_forest_error_corr(self, **kwargs):
+    def pred_random_forest(self, **kwargs):
         """ Generates predictions using Random Forest, calculates the prediction error, and calculates
         the Pearson Correlation Coefficient between the prediction error and the AD measures."""
 
@@ -134,8 +360,10 @@ class DataSet():
             },
             'Results': {
                 'average_cosine_similarities': [],
+                'average_euclidean_distances': [],
+                'length_of_means': [],
                 'mahalanobis_distances': [],
-                'pred_stderr': []
+                'pred_std': []
             }
         }
 
@@ -146,11 +374,12 @@ class DataSet():
             rf = RandomForestRegressor(**kwargs)
             rf.fit(self.X_train[i], self.y_train[i])
             self.score_dicts['RF']['Algorithm']['Estimators'].append(rf.get_params())
-            self.score_dicts['RF']['Algorithm']['tree_preds'].append({})
+            self.score_dicts['RF']['Algorithm']['Tree_predictions'].append({})
 
             # Predit with each estimator (tree)
-            for tree in range(rf.n_estimators):
-                self.score_dicts['RF']['Algorithm']['tree_preds'][i][f'tree_{tree}'] = rf.estimators_[tree].predict(self.X_test[i])
+            for each_tree in range(rf.n_estimators):
+                preds = rf.estimators_[each_tree].predict(self.X_test[i])
+                self.score_dicts['RF']['Algorithm']['Tree_predictions'][i][f'tree_{each_tree}'] = preds
 
             # Predict with ensemble
             y_pred = rf.predict(self.X_test[i])
@@ -162,52 +391,25 @@ class DataSet():
 
         return None
     
-    def calculate_mean_distance(self):
-        """ Calculates the mean distance of each test set entry to its n nearest neighbors."""
-
-        # Loop through each test set
-        for i in range(len(self.X_test)):
-
-            # Get corresponding array of neighbor indices
-            neighbor_indices_array = self.indices[i]
-
-            # Empty list of distances for a test set
-            mean_euc_distances = []
-
-            # Loop through each compound in np array of test set
-            for compound_index in self.X_test_np[i]:
-
-                # Get compound vector
-                compound = self.X_test_np[i][compound_index]
-
-                # Get neighbor vectors
-                neighbor_indices = neighbor_indices_array[compound_index]
-                neighbor_vecs = [self.X_train_np[neighbor_idx] for neighbor_idx in neighbor_indices]
-
-                # Calculate distances and add to test set list of distances
-                mean_distance = np.mean([pairwise.euclidean_distances(compound.reshape(1,-1), neighbor_vec.reshape(1,-1)) for neighbor_vec in neighbor_vecs])
-                mean_euc_distances.append(mean_distance)
-            
-            # Append test set distances to dataset list of distances
-            self.ad_measures['average_euclidean_distances'].append(mean_euc_distances)
-
-        return None
+#####################
+# GET RESULTS
+#####################
     
-    def calculate_tree_stderr(self):
-        """ Calculates the standard error for a single test set entry from the ensemble of single
+    def calculate_tree_std(self):
+        """ Calculates the standard deviation for a single test set entry from the ensemble of single
         tree predictions in a random forest estimator."""
 
         # Loop through each set of results
         for i in range(len(self.X_train)):
             
             # Calculate standard error for each test set entry mean prediction using tree prediction arrays
-            tree_df = pd.DataFrame.from_dict(data=self.score_dicts['RF']['tree_preds'][i], orient='columns')
-            pred_stderr = tree_df.std(axis=1)
-            self.score_dicts['RF']['Results']['pred_stderr'].append(pred_stderr)
+            tree_df = pd.DataFrame.from_dict(data=self.score_dicts['RF']['Tree_predictions'][i], orient='columns')
+            pred_std = tree_df.std(axis=1)
+            self.score_dicts['RF']['Results']['pred_std'].append(pred_std)
 
         return None
     
-    def calculate_stats(self, algorithm, ad_measure):
+    def calculate_stats(self, algorithm, ad_measure, print):
         """ Calculates pearson correlation coefficient, slope, and R2 for the
         provided applicability domain measure, for the provided algorithm."""
 
@@ -244,8 +446,9 @@ class DataSet():
             alg_dict['Results'][ad_measure].append(result_dict)
 
             # Print results
-            printer = pp.PrettyPrinter(indent=4)
-            printer.pprint(alg_dict['Results'][ad_measure])
+            if print:
+                printer = pp.PrettyPrinter(indent=4)
+                printer.pprint(alg_dict['Results'][ad_measure])
 
             return None
 
@@ -285,4 +488,3 @@ class DataSet():
             plt.savefig(file_path)
 
             return None
-            
