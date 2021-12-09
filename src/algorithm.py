@@ -45,6 +45,8 @@ class Algorithm():
         self.predictions = []
         self.squared_error = []
         self.absolute_error = []
+
+        self.intrinsic = []
         
         # Correlation results
         self.Results = {
@@ -73,3 +75,49 @@ class Algorithm():
             'boundary': {k:[] for k in self.boundary_list},
             'intrinsic': []
             }
+        
+    def get_intrinsic(self, X_test):
+        """ Gets the intrinsic applicability domain measure for a given algorithm.
+        
+        X_test: Test set from a dataset object.
+
+        """
+        alg_name = self.estimator.__class__.__name__
+
+        # Random Forest
+        if alg_name == 'RandomForestRegressor':
+            
+            all_tree_preds = {}
+            # Loop through each estimator
+            for each_tree in range(self.estimator.n_estimators):
+
+                # Get predictions
+                tree_preds = self.estimator.estimators_[each_tree].predict(X_test)
+                all_tree_preds[f'tree_{each_tree}'] = tree_preds
+                
+            # Calculate standard deviation of tree predictions for each test set entry
+            tree_df = pd.DataFrame.from_dict(data=all_tree_preds, orient='columns')
+            tree_pred_std = tree_df.std(axis=1)
+            self.intrinsic.append(tree_pred_std.values)
+        
+        # Gradient Boosted Trees
+        if alg_name == 'GradientBoostingRegressor':
+            
+            all_tree_preds = {}
+
+            # Predict with each estimator (tree)
+            for i_tree,tree in enumerate(self.estimator.estimators_):
+                tree_preds = self.estimator.estimators_[i_tree][0].predict(X_test)
+                all_tree_preds[f'tree_{i_tree}'] = tree_preds
+            
+            # Calculate standard deviation of tree predictions for each test set entry
+            tree_df = pd.DataFrame.from_dict(data=all_tree_preds, orient='columns')
+            tree_pred_std = tree_df.std(axis=1)
+            self.intrinsic.append(tree_pred_std.values)
+        
+        # Gaussian Process
+        if alg_name == 'GaussianProcessRegressor':
+            y_pred, y_stds = self.estimator.predict(X=X_test, return_std=True)
+            self.intrinsic.append(y_stds)
+
+        return None

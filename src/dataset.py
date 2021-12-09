@@ -8,6 +8,7 @@ import pickle
 
 # Math imports
 from scipy.stats import pearsonr, linregress
+from sklearn.metrics.pairwise import cosine_distances
 
 # Sklearn imports
 from sklearn.preprocessing import StandardScaler
@@ -39,6 +40,8 @@ from src.utils import drop_infs
 class DataSet():
 
     def __init__(self, csv, size, **kwargs):
+
+        # Read data and define data variables
         self.csv = csv
         self.dataset_name = csv.split('\\')[-1].split('_')[0]
         self.df = pd.read_csv(csv, header=0, index_col=0)
@@ -48,58 +51,62 @@ class DataSet():
         self.X = self.df.iloc[:,:-1]
         self.y = self.df.iloc[:,-1]
 
+        # Preprocessing
         self.var_filter_ = {'filtered': False, 'Value': None}
         self.corr_filter_ = {'filtered': False, 'Value': None}
         self.scaled_ = False
 
+        # Train and test sets
         self.X_train = []
         self.X_test = []
         self.y_train = []
         self.y_test = []
 
+        # Train and test numpy arrays
         self.X_train_np = []
         self.X_test_np = []
         self.y_train_np = []
         self.y_test_np = []
 
-        self.function_list = ['cosine_distance',
-                'euclidean',
-                'cityblock',
-                'minkowski',
-                'chebyshev',
-                'sorensen',
-                'gower',
-                'sorgel',
-                'kulczynski',
-                'canberra',
-                'lorentzian',
-                'czekanowski',
-                'ruzicka',
-                'tanimoto']
+        self.function_list = [Distance.cosine_distance,
+                Distance.euclidean,
+                Distance.cityblock,
+                Distance.minkowski,
+                Distance.chebyshev,
+                Distance.sorensen,
+                Distance.gower,
+                Distance.sorgel,
+                Distance.kulczynski,
+                Distance.canberra,
+                Distance.lorentzian,
+                Distance.czekanowski,
+                Distance.ruzicka,
+                Distance.tanimoto]
 
         self.boundary_list = ['one_class_svm',
                         'robust_covariance',
                         'isolation_forest',
                         'local_outlier_factor']
         
+        # Neighbor indices and distances
+        self.n_neighbors = None
         self.indices = {
-            'X_test':{k: [] for k in self.function_list},
-            'X_train': {k: [] for k in self.function_list}
+            'X_test':{k.__name__: [] for k in self.function_list},
+            'X_train': {k.__name__: [] for k in self.function_list}
             }
-
         self.distances = {
-            'X_test': {k: [] for k in self.function_list},
-            'X_train': {k: [] for k in self.function_list}
+            'X_test': {k.__name__: [] for k in self.function_list},
+            'X_train': {k.__name__: [] for k in self.function_list}
             }
 
-        self.mean_training_set_distances = {k: [] for k in self.function_list}
+        # Training distances
+        self.mean_training_set_distances = {k.__name__: [] for k in self.function_list}
         
         self.score_dicts = {}
 
-        self.n_neighbors = None
-
+        # AD measures for the test set
         self.test_set_ad_measures = {
-            'distance': {k: [] for k in self.function_list},
+            'distance': {k.__name__: [] for k in self.function_list},
             'boundary': {k: [] for k in self.boundary_list}
         }
     
@@ -296,6 +303,9 @@ class DataSet():
             algorithm.squared_error.append(squared_error)
             absolute_error = abs(self.y_test[i] - y_pred)
             algorithm.absolute_error.append(absolute_error)
+
+            # Get intrinsic measure
+            algorithm.get_intrinsic(self.X_test[i])
         
         return None
     
@@ -472,20 +482,6 @@ class DataSet():
 # GET RESULTS
 #####################
     
-    def calculate_tree_std(self, algorithm):
-        """ Calculates the standard deviation for a single test set entry from the ensemble of single
-        tree predictions in a random forest estimator."""
-
-        # Loop through each set of results
-        for i in range(len(self.X_train)):
-            
-            # Calculate standard error for each test set entry mean prediction using tree prediction arrays
-            tree_df = pd.DataFrame.from_dict(data=self.score_dicts[algorithm]['Algorithm']['Tree_predictions'][i], orient='columns')
-            pred_std = tree_df.std(axis=1)
-            self.score_dicts[algorithm]['Intrinsic']['arrays'].append(pred_std)
-
-        return None
-    
     def calculate_global_stats_class(self, algorithm, print_res):
         """ Calculates correlation coefficient, slope, R2, and p values for each type of prediction error
         and applicability domain measure, for an Algorithm object.
@@ -494,21 +490,29 @@ class DataSet():
         print_res (bool): Set to True to print the correlation results
         """
 
+        # Loop through each test set
         for i in range(len(self.X_test)):
-
+            
+            # Loop through each error metric
             for error_metric in ['squared_error', 'absolute_error']:
 
+                # Get prediction error
                 pred_error = getattr(algorithm, error_metric)[i]
                 
-                for ad_measure_type in ['boundary', 'distance']:
+                # Loop through each measure type
+                for ad_measure_type in ['boundary', 'distance', 'intrinsic']:
 
-                    for key in self.test_set_ad_measures[ad_measure_type].keys():
-
-                        if not self.test_set_ad_measures[ad_measure_type][key]:
-                            result_dict = {}
+                    # Intrinsic
+                    if ad_measure_type == 'intrinsic':
+                        
+                        # Catch empty data
+                        if not getattr(algorithm, 'intrinsic'):
+                            result_dict = None
+                        
+                        # If there is actually intrinsic data
                         else:
-                            ad_measure_array = self.test_set_ad_measures[ad_measure_type][key][i]
-
+                            # Get correlations and linear fit
+                            ad_measure_array = getattr(algorithm, 'intrinsic')[i]
                             corr, corr_p = pearsonr(ad_measure_array, pred_error)
                             lin_result = linregress(ad_measure_array, pred_error)
 
@@ -521,133 +525,49 @@ class DataSet():
                                 'p_val': lin_result.pvalue,
                                 'R2': lin_result.rvalue**2
                             }
-                            getattr(algorithm, 'Results')[error_metric][ad_measure_type][key].append(result_dict)
+                            getattr(algorithm, 'Results')[error_metric][ad_measure_type].append(result_dict)
 
+                        # Print
                         if print_res:
-                            printer = pp.PrettyPrinter(indent=4)
-                            print(f'METRIC: {error_metric} TYPE: {ad_measure_type} MEASURE: {key}')
-                            printer.pprint(result_dict)
-                            print('~'*30)
+                                    printer = pp.PrettyPrinter(indent=4)
+                                    print(f'METRIC: {error_metric} TYPE: {ad_measure_type}')
+                                    printer.pprint(result_dict)
+                                    print('~'*30)
+
+                    # Distance and boundary
+                    else:
+
+                        # Loop through each measure
+                        for key in self.test_set_ad_measures[ad_measure_type].keys():
+                            
+                            # Catch empty data
+                            if not self.test_set_ad_measures[ad_measure_type][key]:
+                                result_dict = {}
+
+                            else:
+                                # Get array, correlations, and linear fit
+                                ad_measure_array = self.test_set_ad_measures[ad_measure_type][key][i]
+                                corr, corr_p = pearsonr(ad_measure_array, pred_error)
+                                lin_result = linregress(ad_measure_array, pred_error)
+
+                                # Store results
+                                result_dict = {
+                                    'Pearson_correlation': corr,
+                                    'Pearson_p_val': corr_p,
+                                    'Slope': lin_result.slope,
+                                    'Stderr': lin_result.stderr,
+                                    'p_val': lin_result.pvalue,
+                                    'R2': lin_result.rvalue**2
+                                }
+                                getattr(algorithm, 'Results')[error_metric][ad_measure_type][key].append(result_dict)
+
+                            # Print
+                            if print_res:
+                                printer = pp.PrettyPrinter(indent=4)
+                                print(f'METRIC: {error_metric} TYPE: {ad_measure_type} MEASURE: {key}')
+                                printer.pprint(result_dict)
+                                print('~'*30)
         
-        return None
-    
-    def calculate_global_stats(self, algorithm, measure_type, ad_measure, error_metric, print_res):
-        """ Calculates pearson correlation coefficient, slope, and R2 for the
-        provided distance or boundary based applicability domain measure, for the provided algorithm.
-        
-        algorithm: Set to 'RF', 'kNN', 'GP', 'GBT', or 'SVR' according to desired algorithm
-        measure_type: Set to 'distance' or 'boundary' according to the desired ad measure type
-        ad_measure: Set to any of dataset.ad_measures.keys() according to desired specific ad measure
-        error_metric: Error metric to calculate statistics for, 'Squared_error' or 'Absolute_error'
-        print_res (bool): Set to True to print the results as they are calculated
-
-        """
-
-        # Set algorithm dictionary
-        alg_dict = self.score_dicts[algorithm]
-
-        # Loop through each set of results
-        for i in range(len(self.X_train)):
-
-            # Set dependent variable
-            pred_error = alg_dict['Algorithm'][error_metric][i]
-
-            # Set empty result dictionary if there is no data for a measure
-            if not self.test_set_ad_measures[measure_type][ad_measure]:
-                result_dict = {}
-            
-            else:
-                # Set array if data exists
-                ad_measure_array = self.test_set_ad_measures[measure_type][ad_measure][i]
-
-                # Calculate pearson r
-                try:
-                    corr, corr_p = pearsonr(ad_measure_array, pred_error)
-                except ValueError:
-                    corr = np.nan
-                    corr_p = np.nan
-
-                # Calculate linear fit
-                try:
-                    lin_result = linregress(ad_measure_array, pred_error)
-                except ValueError:
-                    lin_result = np.nan
-
-                # Store results
-                result_dict = {
-                    'Pearson_correlation': corr,
-                    'Pearson_p_val': corr_p,
-                    'Slope': lin_result.slope,
-                    'Stderr': lin_result.stderr,
-                    'p_val': lin_result.pvalue,
-                    'R2': lin_result.rvalue**2
-                }
-                alg_dict['Results'][measure_type][ad_measure].append(result_dict)
-
-                # Print results
-                if print_res:
-                    printer = pp.PrettyPrinter(indent=4)
-                    print(f'METRIC: {error_metric} TYPE: {measure_type} MEASURE: {ad_measure}')
-                    printer.pprint(alg_dict['Results'][measure_type][ad_measure][i])
-                    print('-'*30)
-
-        return None
-    
-    def calculate_intrinsic_stats(self, algorithm, error_metric, print_res):
-        """ Calculates the pearson correlation coefficient, slope, and R2 for the
-        provided algorithm-intrinsic applicability domain measure, for the provided algorithm.
-        
-        algorithm: Algorithm to calculate statistics for, 'kNN', 'RF', 'GP', 'GBT', or 'SVR'
-        error_metric: Error metric to calculate statistics for, 'Squared_error' or 'Absolute_error'
-        print_res (bool): Set to True to print result dictionary
-        """
-
-        # Set algorithm dictionary
-        alg_dict = self.score_dicts[algorithm]
-
-        # Loop through each set of results
-        for i in range(len(self.X_train)):
-
-            # Set dependent variable
-            pred_error = alg_dict['Algorithm'][error_metric][i]
-
-            # Set empty result dictionary if there is no data for a measure
-            if not alg_dict['Intrinsic']['arrays']:
-                result_dict = {}
-            
-            else:
-                # Set array if data exists
-                ad_measure_array = alg_dict['Intrinsic']['arrays'][i]
-
-                # Calculate pearson r
-                try:
-                    corr, corr_p = pearsonr(ad_measure_array, pred_error)
-                except ValueError:
-                    corr = np.nan
-                    corr_p = np.nan
-
-                # Calculate linear fit
-                try:
-                    lin_result = linregress(ad_measure_array, pred_error)
-                except ValueError:
-                    lin_result = np.nan
-
-                # Store results
-                result_dict = {
-                    'Pearson_correlation': corr,
-                    'Pearson_p_val': corr_p,
-                    'Slope': lin_result.slope,
-                    'Stderr': lin_result.stderr,
-                    'p_val': lin_result.pvalue,
-                    'R2': lin_result.rvalue**2
-                }
-                alg_dict['Results']['Intrinsic'].append(result_dict)
-
-                # Print results
-                if print_res:
-                    printer = pp.PrettyPrinter(indent=4)
-                    printer.pprint(alg_dict['Results']['Intrinsic'][i])
-
         return None
     
     def calculate_ratios_class(self, algorithm, print_res):
@@ -759,85 +679,6 @@ class DataSet():
                             print('*'*30)
         
         return None
-
-    def calculate_ratios(self, algorithm, measure_type, ad_measure, print_res):
-        """ Calculates ratios of RMSEinsideAD/RMSEoutsideAD and R2insideAD/R2outsideAD for a range of
-        thresholds."""
-
-        # Loop through each test set
-        for i in range(len(self.X_test)):
-
-            # Calculate thresholds for AD
-            if not self.test_set_ad_measures[measure_type][ad_measure]:
-                return f'No data for {measure_type}: {ad_measure}'
-            
-            if measure_type == 'distance':
-                training_set_distances = self.distances['X_train'][ad_measure][i]
-                training_set_average_d_neighbors = np.mean(training_set_distances, axis=1)
-                thresholds = [np.percentile(training_set_average_d_neighbors, x) for x in range(5,100, 5)]
-            
-            elif measure_type == 'boundary':
-                thresholds = [-1, -0.75, -0.5, 0, 0.5, 0.75, 1]
-            
-            # Define measure array
-            ad_measure_array = self.test_set_ad_measures[measure_type][ad_measure][i]
-
-            # Make empty ratio lists
-            rmse_ratios = []
-            r2_ratios = []
-
-            # Loop through each threshold
-            for thresh in thresholds:
-
-                # Get bool arrays for inside and outside
-                bool_inside_AD = (ad_measure_array < thresh)
-                bool_outside_AD = (ad_measure_array > thresh)                    
-
-                # Get test set true values for inside and outside
-                y_true_inside = self.y_test_np[i][bool_inside_AD]
-                y_true_outside = self.y_test_np[i][bool_outside_AD]
-
-                # Get test set predicted values for inside and outside
-                y_pred = np.array(self.score_dicts[algorithm]['Algorithm']['Predictions'][i])
-                y_pred_inside = y_pred[bool_inside_AD]
-                y_pred_outside = y_pred[bool_outside_AD]
-
-                # Set ratios to np.nan if all compounds are inside or outside AD
-                if np.sum(bool_inside_AD) == 0 or np.sum(bool_outside_AD) == 0:
-                    rmse_ratio = np.nan
-                    rmse_ratios.append(rmse_ratio)
-                    r2_ratio = np.nan
-                    r2_ratios.append(r2_ratio)
-
-                # Proceed to calculation if there are compounds both inside and outside AD
-                else:
-                    # Get RMSE inside and outside and append to ratio list
-                    rmse_inside = mean_squared_error(y_true_inside, y_pred_inside, squared=False)
-                    rmse_outside = mean_squared_error(y_true_outside, y_pred_outside, squared=False)
-                    rmse_ratio = rmse_inside/rmse_outside
-                    rmse_ratios.append(rmse_ratio)
-
-                    # Get R2 inside and outside and append to ratio list
-                    r2_inside = r2_score(y_true_inside, y_pred_inside)
-                    r2_outside = r2_score(y_true_outside, y_pred_outside)
-                    r2_ratio = r2_inside/r2_outside
-                    r2_ratios.append(r2_ratio)
-            
-            # Create ratio dictionary and append to class object
-            ratio_dict = {
-                'thresholds': thresholds,
-                'threshold_percentiles': np.arange(5,100,5),
-                'rmse_ratios': rmse_ratios,
-                'r2_ratios': r2_ratios
-            }
-            self.score_dicts[algorithm]['Ratios'][measure_type][ad_measure].append(ratio_dict)
-
-            # Print if parameter set to print
-            if print_res:
-                pprinter = pp.PrettyPrinter(indent=4)
-                pprinter.pprint(ratio_dict)
-        
-        return None
     
     def calculate_differences_class(self, algorithm, print_res):
         """ Calculates differences for R2 and RMSE inside and outside the applicability domain for every
@@ -942,84 +783,6 @@ class DataSet():
                             pprinter = pp.PrettyPrinter(indent=4)
                             pprinter.pprint(difference_dict)
                             print('+'*30)
-        
-        return None
-    
-    def calculate_difference(self, algorithm, measure_type, ad_measure, print_res):
-        """ Calculates R2inside-R2outside and RMSEoutside-RMSEinside for a range of 
-        thresholds for a given algorithm and ad_measure."""
-
-        # Loop through each test set
-        for i in range(len(self.X_test)):
-
-            # Calculate thresholds for AD
-            if not self.test_set_ad_measures[measure_type][ad_measure]:
-                return f'No data for {measure_type}: {ad_measure}'
-            
-            if measure_type == 'distance':
-                training_set_distances = self.distances['X_train'][ad_measure][i]
-                training_average_d_neighbors = np.mean(training_set_distances, axis=1)
-                thresholds = [np.percentile(training_average_d_neighbors, x) for x in range(5,100, 5)]
-            elif measure_type == 'boundary':
-                thresholds = [-1, -0.75, -0.5, 0, 0.5, 0.75, 1]
-
-            # Set ad measure array
-            ad_measure_array = self.test_set_ad_measures[measure_type][ad_measure][i]
-
-            # Make empty difference lists
-            rmse_differences = []
-            r2_differences = []
-
-            # Loop through each threshold
-            for thresh in thresholds:
-
-                # Get bool arrays for inside and outside
-                bool_inside_AD = (ad_measure_array < thresh)
-                bool_outside_AD = (ad_measure_array > thresh)                    
-
-                # Get test set true values for inside and outside
-                y_true_inside = self.y_test_np[i][bool_inside_AD]
-                y_true_outside = self.y_test_np[i][bool_outside_AD]
-
-                # Get test set predicted values for inside and outside
-                y_pred = np.array(self.score_dicts[algorithm]['Algorithm']['Predictions'][i])
-                y_pred_inside = y_pred[bool_inside_AD]
-                y_pred_outside = y_pred[bool_outside_AD]
-
-                # Set ratios to np.nan if all compounds are inside or outside AD
-                if np.sum(bool_inside_AD) == 0 or np.sum(bool_outside_AD) == 0:
-                    rmse_difference = np.nan
-                    rmse_differences.append(rmse_difference)
-                    r2_difference = np.nan
-                    r2_differences.append(r2_difference)
-
-                # Proceed to calculation if there are compounds both inside and outside AD
-                else:
-                    # Get RMSE inside and outside and append to ratio list
-                    rmse_inside = mean_squared_error(y_true_inside, y_pred_inside, squared=False)
-                    rmse_outside = mean_squared_error(y_true_outside, y_pred_outside, squared=False)
-                    rmse_difference = rmse_outside - rmse_inside
-                    rmse_differences.append(rmse_difference)
-
-                    # Get R2 inside and outside and append to ratio list
-                    r2_inside = r2_score(y_true_inside, y_pred_inside)
-                    r2_outside = r2_score(y_true_outside, y_pred_outside)
-                    r2_difference = r2_inside - r2_outside
-                    r2_differences.append(r2_difference)
-            
-            # Create ratio dictionary and append to class object
-            difference_dict = {
-                'thresholds': thresholds,
-                'threshold_percentiles': np.arange(5,100,5),
-                'rmse_differences': rmse_differences,
-                'r2_differences': r2_differences
-            }
-            self.score_dicts[algorithm]['Differences'][measure_type][ad_measure].append(difference_dict)
-
-            # Print if parameter set to print
-            if print_res:
-                pprinter = pp.PrettyPrinter(indent=4)
-                pprinter.pprint(difference_dict)
         
         return None
     
@@ -1130,81 +893,6 @@ class DataSet():
 
         return None
 
-
-    def plot_comparisons(self, comparison, algorithm, measure_type, ad_measure, out_path):
-        """ Plots ratios of RMSEinsideAD/RMSEoutsideAD and R2insideAD/R2outsideAD for a range of
-        thresholds for a given algorithm and ad_measure.
-        
-        comparison: Set to 'Ratios' to plot ratio data and 'Differences' to plot difference data
-        algorithm: Set to 'RF', 'kNN', 'GP', 'GBT', or 'SVR' for desired algorithm
-        measure_type: Set to 'distance' or 'boundary according to desired ad measure type
-        ad_measure: Set to any of dataset.ad_measures.measure_type.keys() according to desired ad measure
-        out_path: Path for parent PNG folder. Algorithm name is append to the path automatically.
-        """
-
-        # Loop through all test sets
-        for i in range(len(self.X_test)):
-            
-            # Get the data to be plotted
-            if comparison == 'Ratios':
-                if not self.score_dicts[algorithm]['Ratios'][measure_type][ad_measure]:
-                    return f'No ratio data for {measure_type}: {ad_measure}'
-                comparison_dict = self.score_dicts[algorithm]['Ratios'][measure_type][ad_measure][i]
-                rmse_data = comparison_dict['rmse_ratios']
-                r2_data = comparison_dict['r2_ratios']
-                rmse_label = 'RMSEin/RMSEout'
-                r2_label = 'R2in/R2out'
-
-            elif comparison == 'Differences':
-                if not self.score_dicts[algorithm]['Differences'][measure_type][ad_measure]:
-                    return f'No difference data for {measure_type}: {ad_measure}'
-                comparison_dict = self.score_dicts[algorithm]['Differences'][measure_type][ad_measure][i]
-                rmse_data = comparison_dict['rmse_differences']
-                r2_data = comparison_dict['r2_differences']
-                rmse_label = 'RMSEout-RMSEin'
-                r2_label = 'R2in-R2out'
-
-            # If no data, exit function
-            if not r2_data:
-                return f'No data for {measure_type}: {ad_measure}'
-
-            # Set xaxis
-            if measure_type == 'distance':
-                xaxis = comparison_dict['threshold_percentiles']
-                xlabel = 'Training Set Distance Percentile'
-            elif measure_type == 'boundary':
-                xaxis = comparison_dict['thresholds']
-                xlabel = 'Thresholds'
-
-            # Make figure with two different y-axes on same plot
-            fig, ax1 = plt.subplots()
-
-            # Plot R2 data
-            color = 'tab:red'
-            ax1.set_xlabel(xlabel)
-            ax1.set_ylabel(r2_label, color=color)
-            ax1.plot(xaxis, r2_data, color=color)
-            ax1.tick_params(axis='y', labelcolor=color)
-
-            # Set duplicate x axis
-            ax2 = ax1.twinx()
-
-            # Plot RMSE data
-            color = 'tab:blue'
-            ax2.set_ylabel(rmse_label, color=color)
-            ax2.plot(xaxis, rmse_data, color=color)
-            ax2.tick_params(axis='y', labelcolor=color)
-
-            # Set figure title and layout
-            fig.suptitle(f'{algorithm}, {ad_measure}')
-            fig.tight_layout()
-
-            # Save figure
-            file_name = f'{comparison}_{ad_measure}_test_set{i}.png'
-            file_path = os.path.join(out_path, algorithm, comparison, file_name)
-            plt.savefig(file_path)
-
-        return None
     def plot_correlations_class(self, algorithm, out_path):
         """
         algorithm: Algorithm class object with predictions and correlations
@@ -1221,14 +909,10 @@ class DataSet():
                 pred_error = getattr(algorithm, error_metric)[i]
 
                 # Loop through each measure type
-                for ad_measure_type in ['distance', 'boundary']:
-                    
-                    # Loop through each measure
-                    for key in getattr(algorithm, 'Results')[ad_measure_type].keys():
-                        
-                        # Get ad measure array
-                        ad_measure_array = self.test_set_ad_measures[ad_measure_type][key][i]
-                        
+                for ad_measure_type in ['distance', 'boundary', 'intrinsic']:
+
+                    if ad_measure_type == 'intrinsic':
+                        ad_measure_array = algorithm['intrinsic'][i]
                         # Get result dictionary
                         result_dict = getattr(algorithm, ad_measure_type)[key][i]
                         pearson_corr = result_dict['Pearson_correlation']
@@ -1262,65 +946,49 @@ class DataSet():
                         file_path = os.path.join(out_path, alg_name, rfe, error_metric, 'Correlations', file_name)
                         plt.tight_layout()
                         plt.savefig(file_path)
+                    
+                    else:
+                        # Loop through each measure
+                        for key in getattr(algorithm, 'Results')[ad_measure_type].keys():
+                            
+                            # Get ad measure array
+                            ad_measure_array = self.test_set_ad_measures[ad_measure_type][key][i]
+                            
+                            # Get result dictionary
+                            result_dict = getattr(algorithm, ad_measure_type)[key][i]
+                            pearson_corr = result_dict['Pearson_correlation']
+                            pearson_p = result_dict['Pearson_p_val']
+                            slope = result_dict['Slope']
+                            stderr = result_dict['Stderr']
+                            p_val = result_dict['p_val']
+                            r2 = result_dict['R2']
+
+                            label = f'Pearson R: {pearson_corr: .2g} p = {pearson_p: .2g}'\
+                            + '\n' + f'Slope: {slope: .2g} +/- {stderr: 0.2g} p = {p_val: .2g}'\
+                            + '\n' f'R2: {r2: .2g}'
+
+                            # Get algorithm name and RFE
+                            alg_name = algorithm.estimator.__clas__.__name__
+                            if algorithm.recursive_features:
+                                rfe = f'RFE_{algorithm.recursive_features}'
+                            else:
+                                rfe = 'NoRFE'
+
+                            # Plot
+                            f1 = plt.figure()
+                            plt.plot(ad_measure_array, pred_error, 'ro', label=label)
+                            plt.xlabel(key)
+                            plt.ylabel(error_metric)
+                            plt.title(alg_name)
+                            plt.legend(loc="upper left")
+
+                            # Save
+                            file_name = f'{key}_test_set{i}.png'
+                            file_path = os.path.join(out_path, alg_name, rfe, error_metric, 'Correlations', file_name)
+                            plt.tight_layout()
+                            plt.savefig(file_path)
         
         return None
-
-    def plot_correlations(self, algorithm, measure_type, ad_measure, error_metric, out_path):
-        """ Plots correlations between prediction errors and AD measures.
-
-        algorithm: Set to 'RF', 'kNN', 'GP', 'GBT', or 'SVR' for desired algorithm
-        measure_type: Set to 'distance' or 'boundary according to desired ad measure type
-        ad_measure: Set to any of dataset.ad_measures.measure_type.keys() according to desired ad measure
-        error_metric: Type of prediction error used in correlation calculations, can be 'Squared_error' or
-                      'Absolute_error'
-        out_path: Path for parent PNG folder. Algorithm name is append to the path automatically.
-        
-        """
-
-        # Loop through all results
-        for i in range(len(self.X_test)):
-
-            # Get ad measure array
-            if ad_measure == 'Intrinsic':
-                ad_measure_array = self.score_dicts[algorithm][ad_measure]['arrays'][i]
-            else:
-                # Skip measure if empty array
-                if not self.test_set_ad_measures[measure_type][ad_measure]:
-                    print(f'No data for {measure_type}: {ad_measure}.')
-
-                # Get array if it exists
-                else:
-                    ad_measure_array = self.test_set_ad_measures[measure_type][ad_measure][i]
-            
-                    # Get prediction error array
-                    pred_error = self.score_dicts[algorithm]['Algorithm'][error_metric][i]
-
-                    # Get result stats
-                    result_dict = self.score_dicts[algorithm]['Results'][measure_type][ad_measure][i]
-                    pearson_corr = result_dict['Pearson_correlation']
-                    pearson_p = result_dict['Pearson_p_val']
-                    slope = result_dict['Slope']
-                    stderr = result_dict['Stderr']
-                    p_val = result_dict['p_val']
-                    r2 = result_dict['R2']
-
-                    label = f'Pearson R: {pearson_corr: .2g} p = {pearson_p: .2g}'\
-                        + '\n' + f'Slope: {slope: .2g} +/- {stderr: 0.2g} p = {p_val: .2g}'\
-                        + '\n' f'R2: {r2: .2g}'
-
-                    f1 = plt.figure()
-                    plt.plot(ad_measure_array, pred_error, 'ro', label=label)
-                    plt.xlabel(ad_measure)
-                    plt.ylabel('Squared Error')
-                    plt.title(algorithm)
-                    plt.legend(loc="upper left")
-
-                    file_name = f'{ad_measure}_test_set{i}.png'
-                    file_path = os.path.join(out_path, algorithm, error_metric, 'Correlations', file_name)
-                    plt.tight_layout()
-                    plt.savefig(file_path)
-
-            return None
 
     def save_pkl(self, algorithm=None, out_path=None):
         """ Saves dataset and algorithm information in a PKL file.
